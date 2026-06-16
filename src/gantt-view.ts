@@ -70,21 +70,7 @@ export class GanttChartView extends BasesView {
 
 	/** Public: scroll chart to today (for command palette). */
 	scrollToToday(): void {
-		// On iOS Safari the container layout may not be settled at call time:
-		// scroll_current() ends up computing x=0 and $container.scrollLeft clamps to 0.
-		// Double rAF defers until after paint; then we use the already-positioned
-		// .current-highlight element to compute scrollLeft directly.
-		requestAnimationFrame(() => {
-			requestAnimationFrame(() => {
-				const container = this.gantt?.$container;
-				const todayEl = container?.querySelector('.current-highlight') as HTMLElement | null;
-				if (container && todayEl) {
-					container.scrollLeft = Math.max(0, todayEl.offsetLeft - container.clientWidth / 2);
-					return;
-				}
-				this.gantt?.scroll_current();
-			});
-		});
+		this.gantt?.scroll_current();
 	}
 
 	/** Public: switch view mode (for command palette). */
@@ -400,6 +386,23 @@ export class GanttChartView extends BasesView {
 			document.addEventListener = origAdd;
 		}
 		this.capturedGlobalHandlers = captured;
+
+		// Patch $container.scrollTo → synchronous scrollLeft assignment.
+		// frappe-gantt's scroll_current() → set_scroll_position() uses
+		// scrollTo({behavior:'smooth'}), which on iOS Safari never updates
+		// scrollLeft and silently fails, leaving the chart at position 0.
+		// Replacing it with a direct assignment fixes all callers: the
+		// frappe-gantt built-in "Today" button, context-menu items, and
+		// our own scrollToToday() command — they all go through scroll_current().
+		const scrollContainer = this.gantt.$container;
+		const origScrollTo = scrollContainer.scrollTo.bind(scrollContainer);
+		scrollContainer.scrollTo = ((opts?: ScrollToOptions | number, y?: number) => {
+			if (opts !== null && typeof opts === 'object' && 'left' in opts) {
+				scrollContainer.scrollLeft = Math.max(0, (opts.left as number) ?? 0);
+			} else {
+				origScrollTo(opts as never, y as never);
+			}
+		}) as typeof scrollContainer.scrollTo;
 
 		// Apply milestone class to bar wrappers (can't combine with color class
 		// in custom_class because Frappe Gantt throws on spaces in classList.add)
