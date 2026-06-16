@@ -70,7 +70,21 @@ export class GanttChartView extends BasesView {
 
 	/** Public: scroll chart to today (for command palette). */
 	scrollToToday(): void {
-		this.gantt?.scroll_current();
+		// On iOS Safari the container layout may not be settled at call time:
+		// scroll_current() ends up computing x=0 and $container.scrollLeft clamps to 0.
+		// Double rAF defers until after paint; then we use the already-positioned
+		// .current-highlight element to compute scrollLeft directly.
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => {
+				const container = this.gantt?.$container;
+				const todayEl = container?.querySelector('.current-highlight') as HTMLElement | null;
+				if (container && todayEl) {
+					container.scrollLeft = Math.max(0, todayEl.offsetLeft - container.clientWidth / 2);
+					return;
+				}
+				this.gantt?.scroll_current();
+			});
+		});
 	}
 
 	/** Public: switch view mode (for command palette). */
