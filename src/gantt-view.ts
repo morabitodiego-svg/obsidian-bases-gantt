@@ -70,7 +70,55 @@ export class GanttChartView extends BasesView {
 
 	/** Public: scroll chart to today (for command palette). */
 	scrollToToday(): void {
-		this.gantt?.scroll_current();
+		this.scrollToTodayDirect();
+	}
+
+	/**
+	 * Compute today's x-position from frappe-gantt internals and assign
+	 * scrollLeft directly. Avoids scroll_current() → set_scroll_position()
+	 * → scrollTo({behavior:'smooth'}) which silently fails on iOS Safari.
+	 * If today is outside the gantt date range, clamps to the nearest edge.
+	 */
+	private scrollToTodayDirect(): void {
+		const container = this.gantt?.$container;
+		if (!container) return;
+		try {
+			const g = this.gantt as any;
+			const ganttStart: Date = g.gantt_start;
+			const ganttEnd: Date = g.gantt_end;
+			const step: number = g.config?.step;
+			const unit: string = g.config?.unit;
+			const colW: number = g.config?.column_width;
+			if (!ganttStart || !step || !unit || !colW) throw new Error();
+			const now = new Date();
+			const target = now > ganttEnd ? ganttEnd : now < ganttStart ? ganttStart : now;
+			const diff = this.diffInGanttUnits(target, ganttStart, unit);
+			const x = (diff / step) * colW;
+			container.scrollLeft = Math.max(0, x - container.clientWidth / 2);
+		} catch {
+			// fallback: let frappe-gantt try (works on desktop)
+			this.gantt?.scroll_current();
+		}
+	}
+
+	/** Replicates frappe-gantt's d.diff(a, b, unit) used in set_scroll_position. */
+	private diffInGanttUnits(a: Date, b: Date, unit: string): number {
+		const ms = a.getTime() - b.getTime()
+			+ (b.getTimezoneOffset() - a.getTimezoneOffset()) * 60_000;
+		const hours = ms / 3_600_000;
+		const days  = hours / 24;
+		let months  = (a.getFullYear() - b.getFullYear()) * 12
+			+ (a.getMonth() - b.getMonth());
+		months += days % 30 / 30;
+		if (a.getDate() < b.getDate()) months--;
+		const vals: Record<string, number> = {
+			hour: hours, hours,
+			day:  days,  days,
+			month: months, months,
+			year: months / 12, years: months / 12,
+		};
+		const key = unit.endsWith('s') ? unit : unit + 's';
+		return Math.round((vals[key] ?? days) * 100) / 100;
 	}
 
 	/** Public: switch view mode (for command palette). */
@@ -387,13 +435,9 @@ export class GanttChartView extends BasesView {
 		}
 		this.capturedGlobalHandlers = captured;
 
-		// Patch $container.scrollTo → synchronous scrollLeft assignment.
-		// frappe-gantt's scroll_current() → set_scroll_position() uses
-		// scrollTo({behavior:'smooth'}), which on iOS Safari never updates
-		// scrollLeft and silently fails, leaving the chart at position 0.
-		// Replacing it with a direct assignment fixes all callers: the
-		// frappe-gantt built-in "Today" button, context-menu items, and
-		// our own scrollToToday() command — they all go through scroll_current().
+		// Patch $container.scrollTo → synchronous scrollLeft (fixes iOS init scroll).
+		// frappe-gantt's set_scroll_position uses scrollTo({behavior:'smooth'})
+		// which on iOS Safari silently fails for the initial scroll_to position.
 		const scrollContainer = this.gantt.$container;
 		const origScrollTo = scrollContainer.scrollTo.bind(scrollContainer);
 		scrollContainer.scrollTo = ((opts?: ScrollToOptions | number, y?: number) => {
@@ -403,6 +447,14 @@ export class GanttChartView extends BasesView {
 				origScrollTo(opts as never, y as never);
 			}
 		}) as typeof scrollContainer.scrollTo;
+
+		// Replace frappe-gantt's built-in Today button onclick.
+		// The default binding is this.scroll_current.bind(this) which goes through
+		// set_scroll_position → scrollTo({behavior:'smooth'}) and silently fails on iOS.
+		const todayBtn = this.ganttEl.querySelector('.today-button') as HTMLButtonElement | null;
+		if (todayBtn) {
+			todayBtn.onclick = () => this.scrollToTodayDirect();
+		}
 
 		// Apply milestone class to bar wrappers (can't combine with color class
 		// in custom_class because Frappe Gantt throws on spaces in classList.add)
@@ -580,7 +632,7 @@ export class GanttChartView extends BasesView {
 		menu.addItem((item) => {
 			item.setTitle('Scroll to today')
 				.setIcon('calendar')
-				.onClick(() => this.gantt?.scroll_current());
+				.onClick(() => this.scrollToTodayDirect());
 		});
 
 		menu.showAtMouseEvent(evt);
@@ -601,7 +653,7 @@ export class GanttChartView extends BasesView {
 		menu.addItem((item) => {
 			item.setTitle('Scroll to today')
 				.setIcon('calendar')
-				.onClick(() => this.gantt?.scroll_current());
+				.onClick(() => this.scrollToTodayDirect());
 		});
 
 		menu.showAtMouseEvent(evt);
